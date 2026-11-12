@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ターン制インベーダーゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 10px;
+            background: #111;
+            color: #eee;
+            font-family: 'Courier New', Courier, monospace, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        h1 {
+            margin: 5px 0;
+            font-size: 20px;
+            color: #39ff14;
+            text-shadow: 0 0 8px rgba(57, 255, 20, 0.5);
+        }
+        #info-panel {
+            display: flex;
+            gap: 20px;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        canvas {
+            background: #000;
+            border: 2px solid #333;
+            box-shadow: 0 0 15px rgba(0, 255, 200, 0.2);
+            image-rendering: pixelated;
+        }
+        .instruction {
+            font-size: 12px;
+            color: #aaa;
+            margin: 8px 0;
+            text-align: center;
+        }
+        /* モバイル用コントロール */
+        #controls {
+            display: grid;
+            grid-template-columns: repeat(3, 70px);
+            grid-template-rows: repeat(2, 55px);
+            gap: 8px;
+            margin-top: 5px;
+        }
+        .btn {
+            background: #222;
+            color: #fff;
+            border: 2px solid #555;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            outline: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .btn:active {
+            background: #39ff14;
+            color: #000;
+            border-color: #39ff14;
+        }
+        #btn-shoot { grid-column: 2; grid-row: 1; background: #3a1515; border-color: #ff3366; }
+        #btn-left  { grid-column: 1; grid-row: 2; }
+        #btn-wait  { grid-column: 2; grid-row: 2; color: #ffd700; }
+        #btn-right { grid-column: 3; grid-row: 2; }
+    </style>
+</head>
+<body>
+
+    <h1>TURN-BASED SPACE INVADER</h1>
+    <div id="info-panel">
+        <span>SCORE: <span id="score" style="color: #0ff;">0</span></span>
+        <span>TURN: <span id="turn" style="color: #ffd700;">1</span></span>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="500"></canvas>
+
+    <div class="instruction">
+        操作方法: [◀][▶] 移動 / [▲] または [スペース] 射撃 / [▼] 待機 (スキップ)
+    </div>
+
+    <!-- スマホ・画面クリック用UI -->
+    <div id="controls">
+        <button class="btn" id="btn-shoot">▲ 撃つ</button>
+        <button class="btn" id="btn-left">◀ 左</button>
+        <button class="btn" id="btn-wait">⌛ 待つ</button>
+        <button class="btn" id="btn-right">▶ 右</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // ゲーム定数
+        const STEP_X = 20;            // プレイヤー1歩の移動幅
+        const BULLET_SPEED = 20;       // 弾の1ターン移動距離
+        const ENEMY_STEP_X = 8;        // 敵の横移動幅
+        const ENEMY_STEP_Y = 16;       // 敵の降下幅
+        const PLAYER_Y = 460;
+
+        // ゲーム状態
+        let score = 0;
+        let turn = 1;
+        let gameOver = false;
+        let gameWon = false;
+
+        // プレイヤー
+        const player = {
+            x: 200,
+            y: PLAYER_Y,
+            width: 24,
+            height: 16
+        };
+
+        // 弾のリスト
+        let playerBullets = [];
+        let enemyBullets = [];
+
+        // インベーダー生成
+        let enemies = [];
+        let enemyDirection = 1; // 1: 右, -1: 左
+
+        function initEnemies() {
+            enemies = [];
+            const rows = 4;
+            const cols = 8;
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    enemies.push({
+                        x: 40 + c * 40,
+                        y: 40 + r * 30,
+                        width: 22,
+                        height: 16,
+                        alive: true,
+                        type: r // 敵の種類（見た目用）
+                    });
+                }
+            }
+        }
+
+        // ==========================================
+        //  ターン処理（プレイヤーのアクションで進行）
+        // ==========================================
+        function executeTurn(action) {
+            if (gameOver || gameWon) return;
+
+            // 1. プレイヤーのアクション
+            if (action === "left") {
+                player.x = Math.max(player.width / 2, player.x - STEP_X);
+            } else if (action === "right") {
+                player.x = Math.min(canvas.width - player.width / 2, player.x + STEP_X);
+            } else if (action === "shoot") {
+                playerBullets.push({
+                    x: player.x,
+                    y: player.y - 10,
+                    width: 4,
+                    height: 10
+                });
+            }
+            // "wait" の場合は移動も射撃もせずターンだけ進む
+
+            // 2. プレイヤーの弾を前進
+            for (let b of playerBullets) {
+                b.y -= BULLET_SPEED;
+            }
+
+            // 3. 敵の弾を前進
+            for (let b of enemyBullets) {
+                b.y += BULLET_SPEED * 0.75;
+            }
+
+            // 4. 弾と敵の当たり判定
+            for (let pb of playerBullets) {
+                for (let e of enemies) {
+                    if (e.alive &&
+                        pb.x > e.x - e.width / 2 && pb.x < e.x + e.width / 2 &&
+                        pb.y > e.y - e.height / 2 && pb.y < e.y + e.height / 2) {
+                        e.alive = false;
+                        pb.hit = true;
+                        score += 100;
+                    }
+                }
+            }
+            playerBullets = playerBullets.filter(b => !b.hit && b.y > 0);
+
+            // 5. 敵の移動処理
+            let needDrop = false;
+            const livingEnemies = enemies.filter(e => e.alive);
+
+            if (livingEnemies.length === 0) {
+                gameWon = true;
+                draw();
+                return;
+            }
+
+            // 端に当たったら次のターンに折り返して下降
+            for (let e of livingEnemies) {
+                if ((enemyDirection === 1 && e.x + ENEMY_STEP_X > canvas.width - 20) ||
+                    (enemyDirection === -1 && e.x - ENEMY_STEP_X < 20)) {
+                    needDrop = true;
+                    break;
+                }
+            }
+
+            if (needDrop) {
+                enemyDirection *= -1;
+                for (let e of livingEnemies) {
+                    e.y += ENEMY_STEP_Y;
+                }
+            } else {
+                for (let e of livingEnemies) {
+                    e.x += enemyDirection * ENEMY_STEP_X;
+                }
+            }
+
+            // 6. 敵の射撃処理
+            // 最前列（列ごとに一番下にいる敵）から確率で発砲
+            const bottomEnemies = [];
+            for (let c = 0; c < 10; c++) {
+                const colEnemies = livingEnemies.filter(e => Math.abs(e.x - (40 + c * 40)) < 25);
+                if (colEnemies.length > 0) {
+                    colEnemies.sort((a, b) => b.y - a.y);
+                    bottomEnemies.push(colEnemies[0]);
+                }
+            }
+
+            // ターンごとに1〜2発の確率で射撃
+            if (bottomEnemies.length > 0 && Math.random() < 0.6) {
+                const shooter = bottomEnemies[Math.floor(Math.random() * bottomEnemies.length)];
+                enemyBullets.push({
+                    x: shooter.x,
+                    y: shooter.y + 10,
+                    width: 4,
+                    height: 10
+                });
+            }
+
+            // 7. プレイヤーへの当たり判定
+            for (let eb of enemyBullets) {
+                if (Math.abs(eb.x - player.x) < (player.width / 2 + eb.width / 2) &&
+                    Math.abs(eb.y - player.y) < (player.height / 2 + eb.height / 2)) {
+                    gameOver = true;
+                }
+            }
+            enemyBullets = enemyBullets.filter(b => b.y < canvas.height);
+
+            // 敵が自陣に到達したか
+            for (let e of livingEnemies) {
+                if (e.y >= player.y - 10) {
+                    gameOver = true;
+                }
+            }
+
+            turn++;
+            updateUI();
+            draw();
+        }
+
+        // ==========================================
+        //  描画処理
+        // ==========================================
+        function draw() {
+            // 背景クリア
+            ctx.fillStyle = "#05050a";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 防衛ライン（目安）
+            ctx.strokeStyle = "rgba(255, 0, 0, 0.3)";
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, PLAYER_Y - 20);
+            ctx.lineTo(canvas.width, PLAYER_Y - 20);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // プレイヤーの描画
+            ctx.fillStyle = "#39ff14";
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y - player.height / 2);
+            ctx.lineTo(player.x + player.width / 2, player.y + player.height / 2);
+            ctx.lineTo(player.x - player.width / 2, player.y + player.height / 2);
+            ctx.closePath();
+            ctx.fill();
+
+            // プレイヤーの弾（青白の直線光）
+            ctx.fillStyle = "#00ffff";
+            ctx.shadowColor = "#00ffff";
+            ctx.shadowBlur = 6;
+            for (let b of playerBullets) {
+                ctx.fillRect(b.x - b.width / 2, b.y - b.height / 2, b.width, b.height);
+            }
+            ctx.shadowBlur = 0;
+
+            // 敵の弾（危険な赤い光）
+            ctx.fillStyle = "#ff3344";
+            ctx.shadowColor = "#ff3344";
+            ctx.shadowBlur = 6;
+            for (let b of enemyBullets) {
+                ctx.fillRect(b.x - b.width / 2, b.y - b.height / 2, b.width, b.height);
+            }
+            ctx.shadowBlur = 0;
+
+            // 敵の描画
+            for (let e of enemies) {
+                if (!e.alive) continue;
+                if (e.type === 0) ctx.fillStyle = "#ff007f";
+                else if (e.type === 1) ctx.fillStyle = "#ffff00";
+                else ctx.fillStyle = "#00e5ff";
+
+                // ドット風の簡易インベーダー
+                ctx.fillRect(e.x - e.width / 2, e.y - e.height / 2, e.width, e.height);
+                // 目
+                ctx.fillStyle = "#000";
+                ctx.fillRect(e.x - 6, e.y - 2, 3, 3);
+                ctx.fillRect(e.x + 3, e.y - 2, 3, 3);
+            }
+
+            // ゲームオーバー・クリア演出
+            if (gameOver) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "#ff3344";
+                ctx.font = "bold 26px Courier New";
+                ctx.textAlign = "center";
+                ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2);
+                ctx.font = "14px Courier New";
+                ctx.fillStyle = "#fff";
+                ctx.fillText("SPACE / 撃つボタンでリスタート", canvas.width / 2, canvas.height / 2 + 40);
+            } else if (gameWon) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "#39ff14";
+                ctx.font = "bold 26px Courier New";
+                ctx.textAlign = "center";
+                ctx.fillText("STAGE CLEAR!", canvas.width / 2, canvas.height / 2);
+                ctx.font = "14px Courier New";
+                ctx.fillStyle = "#fff";
+                ctx.fillText("SPACE / 撃つボタンでリスタート", canvas.width / 2, canvas.height / 2 + 40);
+            }
+        }
+
+        function updateUI() {
+            document.getElementById("score").textContent = score;
+            document.getElementById("turn").textContent = turn;
+        }
+
+        function resetGame() {
+            score = 0;
+            turn = 1;
+            gameOver = false;
+            gameWon = false;
+            player.x = 200;
+            playerBullets = [];
+            enemyBullets = [];
+            enemyDirection = 1;
+            initEnemies();
+            updateUI();
+            draw();
+        }
+
+        // ==========================================
+        //  入力イベント
+        // ==========================================
+        window.addEventListener("keydown", (e) => {
+            if (gameOver || gameWon) {
+                if (e.code === "Space" || e.code === "Enter") resetGame();
+                return;
+            }
+
+            switch(e.code) {
+                case "ArrowLeft":
+                case "KeyA":
+                    executeTurn("left");
+                    break;
+                case "ArrowRight":
+                case "KeyD":
+                    executeTurn("right");
+                    break;
+                case "ArrowUp":
+                case "KeyW":
+                case "Space":
+                    e.preventDefault();
+                    executeTurn("shoot");
+                    break;
+                case "ArrowDown":
+                case "KeyS":
+                    executeTurn("wait");
+                    break;
+            }
+        });
+
+        // ボタン操作（クリック / スマホタップ）
+        function handleBtn(action) {
+            if (gameOver || gameWon) {
+                resetGame();
+                return;
+            }
+            executeTurn(action);
+        }
+
+        document.getElementById("btn-left").addEventListener("click", () => handleBtn("left"));
+        document.getElementById("btn-right").addEventListener("click", () => handleBtn("right"));
+        document.getElementById("btn-shoot").addEventListener("click", () => handleBtn("shoot"));
+        document.getElementById("btn-wait").addEventListener("click", () => handleBtn("wait"));
+
+        // 開始
+        initEnemies();
+        draw();
+    </script>
+</body>
+</html>
